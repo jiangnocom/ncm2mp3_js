@@ -6,8 +6,6 @@ let music_info_key = Buffer.from([0x23, 0x31, 0x34, 0x6C, 0x6A, 0x6B, 0x5F, 0x21
 const crypto = require('crypto')
 
 fs.readFile('./test.ncm', (err, data) => {
-
-
     // 解码rc4key
     let core_or = 0x64//异或运算需要
     let key_length = data.slice(10, 14).readInt32LE();//1.小端排序 读出keylength
@@ -24,10 +22,6 @@ fs.readFile('./test.ncm', (err, data) => {
     key_decrypted += key_decipher.final('utf8');
     // console.log(key_decrypted);//去除最前面’neteasecloudmusic’17个字节，得到RC4密钥。
     let rc4_key = key_decrypted.slice(17, key_decrypted.length);
-    let rc4_buffer = Buffer.from(rc4_key);
-
-
-
     // 解码musicmetadata
     let meta_or = 0x63;
     let music_info_length = data.slice(key_last_frame, key_last_frame + 4).readInt32LE();//1.小端排序 读出meta info length
@@ -45,49 +39,64 @@ fs.readFile('./test.ncm', (err, data) => {
     const mif_decipher = crypto.createDecipheriv('aes-128-ecb', music_info_key, '');//aes解码
     let mif_decrypted = mif_decipher.update(mif_af_base64de, 'hex', 'utf8');
     mif_decrypted += mif_decipher.final('utf8');
-    // console.log(mif_decrypted);
+    let music_info_obj = JSON.parse(mif_decrypted.slice(6))
+
     let music_info_lsframe = mil_last_frame + music_info_length;
     // 跳过9个字节gap
     let gap_length = 9;
-
-
     // 解析图片
     let image_start_frame = music_info_lsframe + gap_length
     let image_size_buffer = data.slice(image_start_frame, image_start_frame + 4)
     let image_size = image_size_buffer.readInt32LE();//这也是小端排序 指图片数据的长度
     let image_data = data.slice(image_start_frame + 4, image_start_frame + 4 + image_size)
-    fs.writeFile('./test.png', image_data, (err) => {
+    console.log(music_info_obj);
+    fs.writeFile(`./${music_info_obj.album}.jpg`, image_data, (err) => {
         if (err) {
             console.log(err);
         }
     })
     let image_data_lsframe = image_start_frame + 4 + image_size;
-
-    // 生成s盒为了与音乐数据进行异或运算来解码
-    // 1.对s表进行线性填充
-    let s = [];
-    for (let i = 0; i < 256; i++) {
-        s[i] = i
-    }
-    console.log(s);
-    // 2.对k表进行种子秘钥填充 若秘钥长度小于256则重复填充直至填满256
-    let k = [];
-    let key_times = 0;
-    for (let i = 0; i < 256; i++) {
-        key_times++;
-        if (i % rc4_key.length == 0) {
-            key_times = 0
+    // RC4生成s盒为解码做准备
+    let music_data = data.slice(image_data_lsframe);
+    function generateSBox(key) {
+        let sbox = [];
+        for (let i = 0; i < 256; i++) {
+            sbox[i] = i;
         }
-        k[i] = rc4_buffer[key_times].toString(10)
 
+        let j = 0;
+        for (let i = 0; i < 256; i++) {
+            j = (j + sbox[i] + key.charCodeAt(i % key.length)) % 256;
+            // 交换 sbox[i] 和 sbox[j]
+            [sbox[i], sbox[j]] = [sbox[j], sbox[i]];
+        }
+
+        return sbox;
     }
-    // 3.用k表对s表进行置换
-    let af_val = 0;
-    for (let i = 0; i < 256; i++) {
-        af_val = (i + s[i] + k[i]) % 256;
-        let temp = s[i];
-        s[i] = s[af_val]
-        s[af_val] = temp
+    const key = rc4_key;
+    const s = generateSBox(key);
+    // rc4PRGA解码
+    function rc4PRGA(sbox, data) {
+        let i = 0;
+        let j = 0;
+        let k = 0;
+
+        for (let idx = 0; idx < data.length; idx++) {
+            i = (idx + 1) % 256;
+            j = (i + sbox[i]) % 256;
+            k = (sbox[i] + sbox[j]) % 256;
+            data[idx] ^= sbox[k];
+        }
+        return data
     }
-    console.log(s);
+
+
+    music_data = rc4PRGA(s, music_data);  // 输出解密后的数据
+
+    fs.writeFile(`./${music_info_obj.musicName}.${music_info_obj.format}`, music_data, (err) => {
+        if (err) {
+            console.log(err);
+        }
+    })
+
 })
